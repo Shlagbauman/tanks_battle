@@ -1,0 +1,22 @@
+# Скомпилированные файлы
+*.exe
+*.out
+*.o
+*.obj
+*.dll
+*.so
+*.a
+*.lib
+
+# Файлы IDE/редакторов
+.vs/
+.vscode/
+.idea/
+*.sln
+*.vcxproj*
+*.user
+CMakeCache.txt
+
+# Логи и временные файлы
+*.log
+*.tmp
