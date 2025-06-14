@@ -1,129 +1,100 @@
 #include "Tank.hpp"
 #include "Bullet.hpp"
-#include "Map.hpp"
-#include "Input.hpp"
-#include <SFML/Window/Keyboard.hpp>
+
+#include <unordered_map>
 #include <cmath>
+#include <algorithm>
 
-Tank::Tank(TankID id)
-: m_id(id)
+static std::unordered_map<std::string, sf::Texture> TEX;
+
+/* ─── основной ctor ─── */
+Tank::Tank(sf::Vector2f p,
+           sf::Keyboard::Key u, sf::Keyboard::Key d,
+           sf::Keyboard::Key l, sf::Keyboard::Key r,
+           std::initializer_list<sf::Keyboard::Key> fire,
+           const std::string& png)
+    : kU_(u), kD_(d), kL_(l), kR_(r), fire_(fire)
 {
-    // Выставим какие-то базовые параметры спрайта
-    m_sprite.setOrigin(16.f, 16.f); // чтобы центр вращения был по центру
+    body_.setOrigin(16,16);
+    body_.setPosition(p);
+
+    sf::Texture& tx = TEX[png];
+    if(tx.getSize().x == 0) tx.loadFromFile(png);
+
+    spr_.setTexture(tx);
+    spr_.setOrigin(16,16);
+    spr_.setScale(0.75f,0.75f);
+    spr_.setPosition(p);
 }
 
-void Tank::setTexture(const sf::Texture &texture) {
-    m_sprite.setTexture(texture);
+/* ─── короткий ctor-обёртка ─── */
+Tank::Tank(sf::Vector2f p,
+           sf::Keyboard::Key u, sf::Keyboard::Key d,
+           sf::Keyboard::Key l, sf::Keyboard::Key r,
+           sf::Keyboard::Key fire, sf::Color)
+    : Tank(p,u,d,l,r,{fire},
+           (fire==sf::Keyboard::Space)?"assets/tank_green.png"
+                                     :"assets/tank_red.png")
+{}
+
+/* ─── служебные ─── */
+void Tank::setPosition(sf::Vector2f p){ body_.setPosition(p); spr_.setPosition(p); }
+
+void Tank::respawn(sf::Vector2f p){
+    setPosition(p);
+    speed_   = 120.f;
+    bonusT_  = 0.f;
+    shieldT_ = 0.f;
+    shotClock_.restart();
 }
 
-void Tank::setSpawnPosition(const sf::Vector2f& pos) {
-    m_spawnPos = pos;
-    m_sprite.setPosition(pos);
-}
+void Tank::enableShield(float s){ shieldT_ = s; }
+void Tank::applyBonus(float f,float d){ speed_=std::min(speed_*f,MAX_SPEED); bonusT_=d; }
 
-void Tank::handleInput(float dt) {
-    // Выбираем раскладку
-    const InputConfig& cfg = (m_id == TankID::Player1) ? player1Config : player2Config;
-
-    // Движение вперёд/назад
-    if (sf::Keyboard::isKeyPressed(cfg.up)) {
-        float angleRad = m_sprite.getRotation() * 3.14159f / 180.f;
-        sf::Vector2f dir(std::cos(angleRad), std::sin(angleRad));
-        m_sprite.move(dir * m_speed * dt);
-    }
-    if (sf::Keyboard::isKeyPressed(cfg.down)) {
-        float angleRad = m_sprite.getRotation() * 3.14159f / 180.f;
-        sf::Vector2f dir(std::cos(angleRad), std::sin(angleRad));
-        m_sprite.move(-dir * m_speed * dt);
-    }
-    // Поворот
-    if (sf::Keyboard::isKeyPressed(cfg.left)) {
-        m_sprite.rotate(-m_rotationSpeed * dt);
-    }
-    if (sf::Keyboard::isKeyPressed(cfg.right)) {
-        m_sprite.rotate(m_rotationSpeed * dt);
-    }
-    // Стрельба
-    m_fireTimer += dt;
-    if (sf::Keyboard::isKeyPressed(cfg.fire)) {
-        if (m_fireTimer >= m_fireCooldown) {
-            // создаём пулю
-            m_fireTimer = 0.f; 
-        }
-    }
-}
-
-void Tank::update(float dt) {
-    // Просто никаких действий, кроме handleInput
-}
-
-// Проверка столкновений со стенами
-void Tank::checkWallCollision(const Map& map) {
-    sf::FloatRect bounds = getBounds();
-
-    // Вычислим текущую "ячейку" карты
-    int tileX_left   = int(bounds.left)            / Map::TILE_SIZE;
-    int tileX_right  = int(bounds.left+bounds.width) / Map::TILE_SIZE;
-    int tileY_top    = int(bounds.top)             / Map::TILE_SIZE;
-    int tileY_bottom = int(bounds.top+bounds.height) / Map::TILE_SIZE;
-
-    // Если в любой из 4 углов — стена, отбрасываем назад
-    if (map.isWall(tileX_left, tileY_top)    ||
-        map.isWall(tileX_right, tileY_top)   ||
-        map.isWall(tileX_left, tileY_bottom) ||
-        map.isWall(tileX_right, tileY_bottom))
-    {
-        // Откатим позицию
-        m_sprite.setPosition(m_sprite.getPosition() - sf::Vector2f(0.5f, 0.5f));
+/* ─── draw (щит r&asymp;120) ─── */
+void Tank::draw(sf::RenderTarget& t,sf::RenderStates s) const
+{
+    t.draw(spr_,s);
+    if(shieldT_>0.f){
+        constexpr float R=120.f;
+        sf::CircleShape ring(R);
+        ring.setOrigin(R,R);
+        ring.setPosition(spr_.getPosition());
+        ring.setFillColor(sf::Color::Transparent);
+        ring.setOutlineColor({120,180,255});
+        ring.setOutlineThickness(6.f);
+        t.draw(ring,s);
     }
 }
 
-std::unique_ptr<Bullet> Tank::shoot() {
-    // Создадим пулю, учитывая угол
-    float angleRad = m_sprite.getRotation() * 3.14159f / 180.f;
-    sf::Vector2f dir(std::cos(angleRad), std::sin(angleRad));
+/* ─── update ─── */
+void Tank::update(float dt,std::vector<Bullet>& bullets)
+{
+    vel_={};
+    if(sf::Keyboard::isKeyPressed(kU_)) vel_.y=-1;
+    if(sf::Keyboard::isKeyPressed(kD_)) vel_.y= 1;
+    if(sf::Keyboard::isKeyPressed(kL_)) vel_.x=-1;
+    if(sf::Keyboard::isKeyPressed(kR_)) vel_.x= 1;
 
-    // Стартовая позиция пули - чуть впереди танка
-    sf::Vector2f startPos = m_sprite.getPosition() + dir * 20.f;
+    if(vel_!=sf::Vector2f{}){
+        vel_/=std::hypot(vel_.x,vel_.y);
+        dir_=vel_;
+        /* png &laquo;смотрит&raquo; вверх, но раньше был разворот на 180°. добавляем +180° */
+        float ang = std::atan2(dir_.y, dir_.x)*180.f/3.1415926f + 270.f; // +180 к прежним +90
+        spr_.setRotation(std::fmod(ang+360.f,360.f));
+    }
+    body_.move(vel_*speed_*dt);
+    spr_.setPosition(body_.getPosition());
 
-    // ownerID: 1 для Player1, 2 для Player2
-    int owner = (m_id == TankID::Player1) ? 1 : 2;
-
-    // Тут предполагается, что где-то лежит текстура для пули
-    static sf::Texture bulletTex;
-    static bool loaded = false;
-    if (!loaded) {
-        bulletTex.loadFromFile("assets/tank.png"); // условно
-        loaded = true;
+    /* стрельба (личный таймер) */
+    bool fire=std::any_of(fire_.begin(),fire_.end(),
+                 [](auto k){return sf::Keyboard::isKeyPressed(k);});
+    if(fire && shotClock_.getElapsedTime().asMilliseconds()>300){
+        bullets.emplace_back(body_.getPosition()+dir_*50.f, dir_);
+        shotClock_.restart();
     }
 
-    auto bullet = std::make_unique<Bullet>(owner, bulletTex, startPos, m_sprite.getRotation());
-    return bullet;
-}
-
-void Tank::draw(sf::RenderWindow &window) {
-    window.draw(m_sprite);
-}
-
-sf::FloatRect Tank::getBounds() const {
-    // Возвращаем глобальные границы
-    return m_sprite.getGlobalBounds();
-}
-
-bool Tank::takeDamage(int dmg) {
-    m_hp -= dmg;
-    if (m_hp <= 0) {
-        // Респавним
-        m_sprite.setPosition(m_spawnPos);
-        m_hp = 3;
-        return false; // "умер"
-    }
-    return true; // ещё жив
-}
-
-void Tank::restoreFullHP() {
-    m_hp = 3;
-    m_sprite.setPosition(m_spawnPos);
-    // Можно сбросить угол и т.д.
-    m_sprite.setRotation(0.f);
+    /* таймеры бонусов */
+    if(bonusT_>0.f){ bonusT_-=dt; if(bonusT_<=0) speed_=120.f; }
+    if(shieldT_>0.f) shieldT_=std::max(shieldT_-dt,0.f);
 }
