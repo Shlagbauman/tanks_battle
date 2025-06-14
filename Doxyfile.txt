@@ -1,0 +1,8 @@
+PROJECT_NAME      = "Tanks2D"
+INPUT             = src
+FILE_PATTERNS     = *.hpp *.cpp
+RECURSIVE         = NO
+EXTRACT_PRIVATE   = NO
+GENERATE_HTML     = YES
+GENERATE_LATEX    = NO
+QUIET             = YES

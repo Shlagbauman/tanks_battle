@@ -1,20 +1,31 @@
-cmake_minimum_required(VERSION 3.10)
-project(TankDuel)
+cmake_minimum_required(VERSION 3.19)
+project(Tanks2D LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Ищем SFML (нужна установлена SFML >= 2.5)
-find_package(SFML 2.5 COMPONENTS system window graphics audio REQUIRED)
+# ---------- SFML ----------
+find_package(SFML 2.6 REQUIRED COMPONENTS graphics window system audio)
 
-add_executable(TankDuel
-    src/main.cpp
-    src/Game.cpp
-    src/Map.cpp
-    src/Entity.cpp
-    src/Tank.cpp
-    src/Bullet.cpp
-    src/Input.cpp
-)
+# ---------- библиотека игры ----------
+file(GLOB GAME_SRC src/*.cpp src/*.hpp)
+add_library(game_objects STATIC ${GAME_SRC})
+target_link_libraries(game_objects PRIVATE sfml-graphics sfml-window sfml-system sfml-audio)
 
-target_include_directories(TankDuel PRIVATE include)
-target_link_libraries(TankDuel sfml-system sfml-window sfml-graphics sfml-audio)
+# ---------- само приложение ----------
+add_executable(tanks2d src/main.cpp)          # если main.cpp у тебя в src/
+target_link_libraries(tanks2d PRIVATE game_objects)
+
+# ---------- Catch2 single-header ----------
+enable_testing()
+
+add_executable(tests
+    external/Catch2/catch_amalgamated.cpp
+    tests/tests.cpp)
+target_include_directories(tests PRIVATE
+    external/Catch2             # для .cpp
+    external/Catch2/include     # для .hpp
+    src)
+target_link_libraries(tests PRIVATE game_objects)
+
+add_test(NAME all_tests COMMAND tests)

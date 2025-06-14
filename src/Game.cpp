@@ -1,190 +1,141 @@
 #include "Game.hpp"
-#include "Tank.hpp"
-#include "Map.hpp"
-#include "Bullet.hpp"
-#include <iostream>
-#include <cmath>
+#include <random>
+#include <stdexcept>
 
-Game::Game()
-: m_window(sf::VideoMode(640, 480), "Tank Duel")
+Game::Game(const std::string& a)
+    : map_("maps/level1.txt")
+    , window_({1024,768}, "Tanks2D")
+    , t1_({ 96,  96}, sf::Keyboard::W,  sf::Keyboard::S,
+                    sf::Keyboard::A,  sf::Keyboard::D,
+                    {sf::Keyboard::Space},
+                    a + "/tank_green.png", 0)
+    , t2_({928, 672}, sf::Keyboard::Up,   sf::Keyboard::Down,
+                    sf::Keyboard::Left, sf::Keyboard::Right,
+                    {sf::Keyboard::RControl, sf::Keyboard::LControl, sf::Keyboard::Enter},
+                    a + "/tank_red.png",   1)
 {
-    m_window.setFramerateLimit(60);
+    if(!font_.loadFromFile(a + "/OpenSans-Regular.ttf"))
+        throw std::runtime_error("font not found");
+    scoreText_.setFont(font_);
+    scoreText_.setCharacterSize(24);
+    scoreText_.setPosition(10.f, 10.f);
 
-    loadResources();
+    boomBuf_.loadFromFile(a + "/explosion.wav");
+    boom_.setBuffer(boomBuf_);
+    boom_.setVolume(45.f);
 
-    // Создаём карту
-    m_map = std::make_unique<Map>();
-
-    // Создаём два танка
-    m_tank1 = std::make_unique<Tank>(TankID::Player1);
-    m_tank2 = std::make_unique<Tank>(TankID::Player2);
-
-    // Пример текстуры для танка
-    // (предполагаем, что "assets/tank.png" загружается в m_font, но на практике – отдельная m_tankTexture)
-    // Для упрощения тут не показываем, как грузим tank.png. Делаем вид, что уже загружена.
-    // Но можно было завести ещё один sf::Texture m_tankTex; m_tankTex.loadFromFile("assets/tank.png");
-    // и потом передать:
-    // m_tank1->setTexture(m_tankTex);
-    // m_tank2->setTexture(m_tankTex);
-
-    // Позиции спауна (можно менять)
-    m_tank1->setSpawnPosition({100.f, 100.f});
-    m_tank2->setSpawnPosition({500.f, 300.f});
-
-    // Текст для счёта
-    m_scoreText.setFont(m_font);
-    m_scoreText.setCharacterSize(20);
-    m_scoreText.setFillColor(sf::Color::White);
-    m_scoreText.setPosition(10.f, 10.f);
-    m_scoreText.setString("P1: 0 | P2: 0");
+    bonusSpots_ = {{512,384},{512,256},{512,512},{320,384},{704,384}};
+    bonuses_.emplace_back(bonusSpots_[0], BonusType::Speed);
 }
 
-void Game::loadResources() {
-    if (!m_font.loadFromFile("assets/font.ttf")) {
-        // На случай ошибки
-        std::cerr << "Failed to load font.ttf\n";
-    }
-}
-
-void Game::run() {
-    sf::Clock clock;
-    while (m_window.isOpen()) {
-        processEvents();
-
-        float dt = clock.restart().asSeconds();
-        update(dt);
-
-        render();
-    }
-}
-
-void Game::processEvents() {
-    sf::Event event;
-    while (m_window.pollEvent(event)) {
-        if (event.type == sf::Event::Closed) {
-            m_window.close();
+int Game::run()
+{
+    sf::Clock frame;
+    while(window_.isOpen())
+    {
+        sf::Event e;
+        while(window_.pollEvent(e)){
+            if(e.type==sf::Event::Closed) window_.close();
+            if(e.type==sf::Event::KeyPressed && e.key.code==sf::Keyboard::F1)
+                nextMap();
         }
+
+        float dt = frame.restart().asSeconds();
+
+        auto old1 = t1_.position();  t1_.update(dt, bullets_);
+        if(map_.collides(t1_.bounds())) t1_.setPosition(old1);
+
+        auto old2 = t2_.position();  t2_.update(dt, bullets_);
+        if(map_.collides(t2_.bounds())) t2_.setPosition(old2);
+
+        for(auto& b : bullets_) b.update(dt);
+
+        handle();
+
+        if(bonuses_.empty() && bonusClk_.getElapsedTime().asSeconds()>bonusCD_)
+            spawnBonus();
+
+        window_.clear();
+        window_.draw(map_);
+        for(auto& b : bullets_) window_.draw(b);
+        window_.draw(t1_); window_.draw(t2_);
+        for(auto& bo : bonuses_) window_.draw(bo);
+
+        scoreText_.setString(std::to_string(score1_) + " : " + std::to_string(score2_));
+        window_.draw(scoreText_);
+        window_.display();
     }
+    return 0;
 }
 
-// Основное обновление
-void Game::update(float dt) {
-    // Двигаем танки
-    m_tank1->handleInput(dt);
-    m_tank1->update(dt);
-    m_tank1->checkWallCollision(*m_map);
 
-    m_tank2->handleInput(dt);
-    m_tank2->update(dt);
-    m_tank2->checkWallCollision(*m_map);
+void Game::handle()
+{
+    for(std::size_t i = 0; i < bullets_.size(); )
+    {
+        auto& b = bullets_[i];
 
-    // Обновляем все пули
-    for (auto& b : m_bullets) {
-        b->update(dt);
-    }
-    // Проверяем столкновения пуль со стенами
-    for (auto& b : m_bullets) {
-        if (b->checkWallCollision(*m_map)) {
-            // Для упрощения: "Уничтожим" пулю, переместив её за границы
-            b->draw(m_window); // не обязательно
-            b->update(9999.f); // не обязательно
-            // Можно пометить пулю флагом на удаление
+        if(map_.collides(b.bounds())) {
+            bullets_.erase(bullets_.begin()+i);
+            continue;
         }
-    }
 
-    // Удаляем "мертвые" пули (за границей)
-    m_bullets.erase(
-        std::remove_if(m_bullets.begin(), m_bullets.end(),
-            [&](const std::unique_ptr<Bullet>& b){
-                sf::FloatRect bounds = b->getBounds();
-                bool outOfScreen =
-                    (bounds.left > 700 || bounds.left + bounds.width < 0 ||
-                     bounds.top > 500 || bounds.top + bounds.height < 0);
-                return outOfScreen;
-            }),
-        m_bullets.end()
-    );
+        bool hit = false;
+        if(b.bounds().intersects(t1_.bounds()) && !t1_.shielded()){
+            ++score2_; hit = true;
+        }
+        else if(b.bounds().intersects(t2_.bounds()) && !t2_.shielded()){
+            ++score1_; hit = true;
+        }
 
-    // Проверяем попадания пуль в танки
-    checkCollisions();
-    
-    // Обновляем HUD
-    m_scoreText.setString("P1: " + std::to_string(m_scoreP1) +
-                          " | P2: " + std::to_string(m_scoreP2));
-}
-
-// Проверка столкновений пули и танка
-void Game::checkCollisions() {
-    // Для каждой пули – проверить пересечение с танками
-    for (auto& bullet : m_bullets) {
-        sf::FloatRect bRect = bullet->getBounds();
-
-        // Не хотим, чтобы пуля попадала в "своего" владельца, поэтому проверяем ID
-        if (bullet->getOwnerID() == 1) {
-            if (bRect.intersects(m_tank2->getBounds())) {
-                // Попадание в танк2
-                m_scoreP1++;
-                bool alive = m_tank2->takeDamage(1);
-                // Уберём пулю
-                bRect.left = 9999.f; // "отправим"
-            }
+        if(hit){
+            boom_.play();
+            bullets_.clear();
+            resetRound();
+            break;
         } else {
-            if (bRect.intersects(m_tank1->getBounds())) {
-                // Попадание в танк1
-                m_scoreP2++;
-                bool alive = m_tank1->takeDamage(1);
-                // Уберём пулю
-                bRect.left = 9999.f;
-            }
+            ++i;
         }
     }
 
-    // Удаляем пули, "улетевшие" в 9999
-    m_bullets.erase(
-        std::remove_if(m_bullets.begin(), m_bullets.end(),
-            [&](const std::unique_ptr<Bullet>& b){
-                return b->getBounds().left > 8000.f;
-            }),
-        m_bullets.end()
-    );
-
-    // Если у танка 1 hp <= 0, респавним
-    // Если у танка 2 hp <= 0, респавним
-    // Для простоты делаем это просто проверкой в конце
-    // (Можно в takeDamage() вернуть false и сразу resetRound)
-    // Но тут покажем отдельно:
-    if (m_tank1->getBounds().width <= 0.f) {
-        // Подразумевается: танк1 "мертв"? Но в примере getBounds() не вернёт width=0
-        // Лучше сделать поле hp в самом Tank
+    for(auto it = bonuses_.begin(); it != bonuses_.end(); )
+    {
+        bool picked = false;
+        if(it->bounds().intersects(t1_.bounds())){
+            if(it->type() == BonusType::Speed ) t1_.applyBonus(1.5f,5.f);
+            if(it->type() == BonusType::Shield) t1_.enableShield(3.f);
+            picked = true;
+        }
+        if(it->bounds().intersects(t2_.bounds())){
+            if(it->type() == BonusType::Speed ) t2_.applyBonus(1.5f,5.f);
+            if(it->type() == BonusType::Shield) t2_.enableShield(3.f);
+            picked = true;
+        }
+        if(picked) it = bonuses_.erase(it);
+        else       ++it;
     }
 }
 
-// Респавн обоих танков, если нужно
-void Game::resetRound(int deadTankId) {
-    // Можно сделать: если deadTankId = 1, то...
-    // Но сейчас упрощаем
-    m_tank1->restoreFullHP();
-    m_tank2->restoreFullHP();
+void Game::spawnBonus()
+{
+    static std::mt19937 rng{ std::random_device{}() };
+    std::uniform_int_distribution<size_t> spot(0, bonusSpots_.size()-1);
+    std::uniform_int_distribution<int> kind(0,1);
+    BonusType t = (kind(rng)==0) ? BonusType::Speed : BonusType::Shield;
+    bonuses_.emplace_back(bonusSpots_[ spot(rng) ], t);
+    bonusClk_.restart();
 }
 
-// Рендер
-void Game::render() {
-    m_window.clear(sf::Color::Black);
+void Game::nextMap()
+{
+    usingFirst_ = !usingFirst_;
+    map_ = Tilemap(usingFirst_ ? mapFile1_ : mapFile2_);
+    resetRound();
+}
 
-    // Рисуем стены
-    m_map->draw(m_window);
-
-    // Рисуем танки
-    m_tank1->draw(m_window);
-    m_tank2->draw(m_window);
-
-    // Пули
-    for (auto& b : m_bullets) {
-        b->draw(m_window);
-    }
-
-    // HUD (счёт)
-    m_window.draw(m_scoreText);
-
-    m_window.display();
+void Game::resetRound()
+{
+    t1_.respawn({ 96,  96});
+    t2_.respawn({928, 672});
+    bullets_.clear();
 }
